@@ -42,7 +42,8 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 
 	token := c.OAuthSecret
 
-	if err := sccachedist.WriteFile("/run/sccache-scheduler.conf", sccachedist.SchedulerConf(token)); err != nil {
+	schedConf := sccachedist.ConfPath("sccache-scheduler.conf")
+	if err := sccachedist.WriteFile(schedConf, sccachedist.SchedulerConf(token)); err != nil {
 		return err
 	}
 	// Expose the local scheduler over tsnet for workers' bridges.
@@ -51,7 +52,7 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 		return fmt.Errorf("tsnet listen scheduler: %w", err)
 	}
 	go acceptForward(schedExpose, func() (net.Conn, error) { return net.Dial("tcp", "127.0.0.1:10600") })
-	if _, err := sccachedist.StartScheduler("/run/sccache-scheduler.conf"); err != nil {
+	if _, err := sccachedist.StartScheduler(schedConf); err != nil {
 		return err
 	}
 

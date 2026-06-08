@@ -89,12 +89,14 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 		}
 	}
 
+	cacheDir := sccachedist.ConfPath("sccache-dist-server-cache")
 	conf := sccachedist.ServerConf(c.OAuthSecret, serverPublicAddr(idx),
-		"http://127.0.0.1:10600", "/var/lib/sccache-dist/cache")
-	if err := sccachedist.WriteFile("/run/sccache-server.conf", conf); err != nil {
+		"http://127.0.0.1:10600", cacheDir)
+	confPath := sccachedist.ConfPath("sccache-server.conf")
+	if err := sccachedist.WriteFile(confPath, conf); err != nil {
 		return err
 	}
-	srv, err := sccachedist.StartServer("/run/sccache-server.conf")
+	srv, err := sccachedist.StartServer(confPath)
 	if err != nil {
 		return err
 	}

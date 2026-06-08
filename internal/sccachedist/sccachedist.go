@@ -4,8 +4,20 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 )
+
+// ConfPath returns a writable path for a generated config file. GitHub runners
+// run the action as a non-root user with a read-only /run, so use RUNNER_TEMP
+// (or the OS temp dir) instead of /run.
+func ConfPath(name string) string {
+	dir := os.Getenv("RUNNER_TEMP")
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, name)
+}
 
 // Nproc is the default per-worker slot count.
 func Nproc() int { return runtime.NumCPU() }
