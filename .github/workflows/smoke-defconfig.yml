@@ -18,7 +18,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p "$HOME/.local/bin"
-          gh release download v0.0.1 -R xdqi/sccache-dist-action \
+          gh release download -R xdqi/sccache-dist-action \
             -p 'sccache-sccache-dist-poc-tweaks-linux-amd64' \
             -p 'sccache-dist-sccache-dist-poc-tweaks-linux-amd64' -D /tmp/engine --clobber
           install -m755 /tmp/engine/sccache-sccache-dist-poc-tweaks-linux-amd64 "$HOME/.local/bin/sccache"
@@ -42,7 +42,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p "$HOME/.local/bin"
-          gh release download v0.0.1 -R xdqi/sccache-dist-action \
+          gh release download -R xdqi/sccache-dist-action \
             -p 'sccache-sccache-dist-poc-tweaks-linux-amd64' \
             -p 'sccache-dist-sccache-dist-poc-tweaks-linux-amd64' -D /tmp/engine --clobber
           install -m755 /tmp/engine/sccache-sccache-dist-poc-tweaks-linux-amd64 "$HOME/.local/bin/sccache"
