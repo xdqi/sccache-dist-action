@@ -1,4 +1,8 @@
-name: smoke
+name: smoke-defconfig
+# Heavier smoke: 3 workers build the x86_64 defconfig kernel (thousands of C
+# TUs -> real farm load) with gcc distributed via sccache-dist, then boot the
+# resulting bzImage in QEMU. Only bzImage is built (no modules); QEMU reaching
+# init (VFS panic on no rootfs) proves the distributed-built kernel is sound.
 on: [workflow_dispatch]
 jobs:
   workers:
@@ -31,26 +35,35 @@ jobs:
           min-workers: 1
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
-      - name: Build kernel via the farm
+      - name: Build defconfig bzImage via the farm
         run: |
+          echo "SCCACHE_J=$SCCACHE_J workers=$SCCACHE_WORKERS_ONLINE"
           git clone --depth 1 https://github.com/torvalds/linux.git linux
           cd linux
-          make tinyconfig
-          ./scripts/config --enable CONFIG_PRINTK --enable CONFIG_TTY \
-            --enable CONFIG_SERIAL_8250 --enable CONFIG_SERIAL_8250_CONSOLE --enable CONFIG_BINFMT_ELF
-          make olddefconfig
+          make x86_64_defconfig
+          # C distributes via sccache-dist; .S compiles locally (engine forces it).
+          # Build ONLY bzImage (no modules) — QEMU boot is the success proof.
           make -j"${SCCACHE_J:-6}" CC="sccache gcc" bzImage
           test -f arch/x86/boot/bzImage
+          echo "=== sccache -s ==="
           sccache -s
-      - name: Boot in QEMU
+      - name: Boot bzImage in QEMU
         working-directory: linux
         run: |
+          # No rootfs: a successful boot runs init and panics on "no working init"
+          # / "Unable to mount root fs" — that panic IS proof the kernel booted.
           set +e
-          timeout 90 qemu-system-x86_64 -nographic -no-reboot \
+          timeout 120 qemu-system-x86_64 -nographic -no-reboot \
             -kernel arch/x86/boot/bzImage -append "console=ttyS0 panic=-1" 2>&1 | tee boot.log
           set -e
-          grep -q "Linux version" boot.log || { echo "no banner"; exit 1; }
+          grep -q "Linux version" boot.log || { echo "no kernel banner"; exit 1; }
           grep -Eq "VFS: Unable to mount root fs|No working init|Kernel panic" boot.log \
-            && echo "SMOKE boot = PASS" || { echo "did not reach init"; exit 1; }
-
-# (registered 12:28:31)
+            && echo "SMOKE-DEFCONFIG boot = PASS (kernel reached init)" \
+            || { echo "banner seen but never reached init"; exit 1; }
+      - name: Upload boot log
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: defconfig-boot-log
+          path: linux/boot.log
+          if-no-files-found: ignore
