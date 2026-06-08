@@ -65,6 +65,12 @@ jobs:
           git clone --depth 1 https://github.com/torvalds/linux.git linux
           cd linux
           make x86_64_defconfig
+          # The hosted runner's gcc is newer than this kernel tree expects and
+          # emits warnings (e.g. -Wtautological-compare in kernel macros) that
+          # CONFIG_WERROR=y turns fatal. Disable it so any kernel/gcc pair builds
+          # — this is a toolchain-version skew, not a sccache-distribution issue.
+          ./scripts/config --disable CONFIG_WERROR
+          make olddefconfig
           # C distributes via sccache-dist; .S compiles locally (engine forces it).
           # Build ONLY bzImage (no modules) — QEMU boot is the success proof.
           make -j"${SCCACHE_J:-6}" CC="sccache gcc" bzImage
