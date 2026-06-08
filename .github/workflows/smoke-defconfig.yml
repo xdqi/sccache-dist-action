@@ -13,6 +13,18 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with: { go-version: '1.26' }
+      - name: Install sccache engine
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          gh release download v0.0.1 -R xdqi/sccache-dist-action \
+            -p 'sccache-sccache-dist-poc-tweaks-linux-amd64' \
+            -p 'sccache-dist-sccache-dist-poc-tweaks-linux-amd64' -D /tmp/engine --clobber
+          install -m755 /tmp/engine/sccache-sccache-dist-poc-tweaks-linux-amd64 "$HOME/.local/bin/sccache"
+          install -m755 /tmp/engine/sccache-dist-sccache-dist-poc-tweaks-linux-amd64 "$HOME/.local/bin/sccache-dist"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/sccache" --version
       - uses: ./
         with:
           mode: worker
@@ -25,6 +37,18 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with: { go-version: '1.26' }
+      - name: Install sccache engine
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          gh release download v0.0.1 -R xdqi/sccache-dist-action \
+            -p 'sccache-sccache-dist-poc-tweaks-linux-amd64' \
+            -p 'sccache-dist-sccache-dist-poc-tweaks-linux-amd64' -D /tmp/engine --clobber
+          install -m755 /tmp/engine/sccache-sccache-dist-poc-tweaks-linux-amd64 "$HOME/.local/bin/sccache"
+          install -m755 /tmp/engine/sccache-dist-sccache-dist-poc-tweaks-linux-amd64 "$HOME/.local/bin/sccache-dist"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/sccache" --version
       - name: Kernel build deps + qemu
         run: sudo apt-get update && sudo apt-get install -y flex bison libelf-dev bc libssl-dev qemu-system-x86
       - id: farm
