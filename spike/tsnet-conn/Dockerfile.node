@@ -1,0 +1,8 @@
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      gcc g++ libc6-dev make git ca-certificates docker.io \
+    && rm -rf /var/lib/apt/lists/*
+COPY bin/sccache /usr/local/bin/sccache
+COPY bin/sccache-dist /usr/local/bin/sccache-dist
+COPY bin/tsbridge /usr/local/bin/tsbridge
+RUN chmod +x /usr/local/bin/sccache /usr/local/bin/sccache-dist /usr/local/bin/tsbridge
