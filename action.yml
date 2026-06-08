@@ -4,7 +4,7 @@ inputs:
   mode:            { description: 'coordinator | worker', required: true }
   oauth-secret:    { description: 'Tailscale OAuth client secret (used as authkey)', required: true }
   oauth-client-id: { description: 'reserved; unused', required: false }
-  expected-workers:{ description: 'workers to wait for (coordinator)', required: false }
+  expected-workers: { description: 'workers to wait for (coordinator)', required: false }
   min-workers:     { description: 'min online to proceed (default expected)', required: false }
   wait-timeout:    { description: 'max wait for workers', required: false, default: '300s' }
   worker-index:    { description: 'unique per worker (matrix idx)', required: false }
@@ -12,7 +12,7 @@ inputs:
   run-prefix:      { description: 'hostname namespacing', required: false, default: '${{ github.run_id }}' }
   slots:           { description: 'per-worker concurrent jobs (0=nproc)', required: false, default: '0' }
   poll-interval:   { description: 'teardown poll interval', required: false, default: '1s' }
-  teardown-threshold:{ description: 'offline reads before worker exits', required: false, default: '5' }
+  teardown-threshold: { description: 'offline reads before worker exits', required: false, default: '5' }
   dist-fallback:   { description: 'SCCACHE_DIST_FALLBACK (fall back to local on non-distributable)', required: false, default: 'true' }
   sccache-ref:     { description: 'forked sccache build to use', required: false, default: 'sccache-dist-poc-tweaks' }
   github-token:    { description: 'token for release download', required: false, default: '${{ github.token }}' }
