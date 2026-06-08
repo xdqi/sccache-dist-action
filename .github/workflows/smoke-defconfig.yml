@@ -5,6 +5,12 @@ name: smoke-defconfig
 # init (VFS panic on no rootfs) proves the distributed-built kernel is sound.
 # 15 build servers (vs 3) give ~5x the scheduler reservation slots, which cuts
 # the "failed distributed -> local fallback" rate seen at lower worker counts.
+#
+# Unlike selftest/smoke (which use `uses: ./` to test the CURRENT checkout), this
+# workflow consumes the PUBLISHED action `xdqi/sccache-dist-action@v0.0.2` like a
+# real downstream user: the JS wrapper auto-downloads the Go binary AND the forked
+# sccache engine from that release (ensureEngine), so no checkout / setup-go /
+# manual engine install is needed.
 on: [workflow_dispatch]
 jobs:
   workers:
@@ -13,22 +19,7 @@ jobs:
       matrix: { idx: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] }
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with: { go-version: '1.26' }
-      - name: Install sccache engine
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p "$HOME/.local/bin"
-          gh release download -R xdqi/sccache-dist-action \
-            -p 'sccache-sccache-dist-poc-tweaks-linux-amd64' \
-            -p 'sccache-dist-sccache-dist-poc-tweaks-linux-amd64' -D /tmp/engine --clobber
-          install -m755 /tmp/engine/sccache-sccache-dist-poc-tweaks-linux-amd64 "$HOME/.local/bin/sccache"
-          install -m755 /tmp/engine/sccache-dist-sccache-dist-poc-tweaks-linux-amd64 "$HOME/.local/bin/sccache-dist"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/sccache" --version
-      - uses: ./
+      - uses: xdqi/sccache-dist-action@v0.0.2
         with:
           mode: worker
           worker-index: ${{ matrix.idx }}
@@ -37,25 +28,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with: { go-version: '1.26' }
-      - name: Install sccache engine
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p "$HOME/.local/bin"
-          gh release download -R xdqi/sccache-dist-action \
-            -p 'sccache-sccache-dist-poc-tweaks-linux-amd64' \
-            -p 'sccache-dist-sccache-dist-poc-tweaks-linux-amd64' -D /tmp/engine --clobber
-          install -m755 /tmp/engine/sccache-sccache-dist-poc-tweaks-linux-amd64 "$HOME/.local/bin/sccache"
-          install -m755 /tmp/engine/sccache-dist-sccache-dist-poc-tweaks-linux-amd64 "$HOME/.local/bin/sccache-dist"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/sccache" --version
       - name: Kernel build deps + qemu
         run: sudo apt-get update && sudo apt-get install -y flex bison libelf-dev bc libssl-dev qemu-system-x86
       - id: farm
-        uses: ./
+        uses: xdqi/sccache-dist-action@v0.0.2
         with:
           mode: coordinator
           expected-workers: 15
