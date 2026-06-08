@@ -1,13 +1,16 @@
 name: smoke-defconfig
-# Heavier smoke: 3 workers build the x86_64 defconfig kernel (thousands of C
+# Heavier smoke: 15 workers build the x86_64 defconfig kernel (thousands of C
 # TUs -> real farm load) with gcc distributed via sccache-dist, then boot the
 # resulting bzImage in QEMU. Only bzImage is built (no modules); QEMU reaching
 # init (VFS panic on no rootfs) proves the distributed-built kernel is sound.
+# 15 build servers (vs 3) give ~5x the scheduler reservation slots, which cuts
+# the "failed distributed -> local fallback" rate seen at lower worker counts.
 on: [workflow_dispatch]
 jobs:
   workers:
     strategy:
-      matrix: { idx: [1, 2, 3] }
+      fail-fast: false
+      matrix: { idx: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] }
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -55,8 +58,11 @@ jobs:
         uses: ./
         with:
           mode: coordinator
-          expected-workers: 3
-          min-workers: 1
+          expected-workers: 15
+          min-workers: 8
+          # 15 runners may queue past the 5 min default before all join the
+          # tailnet; give the fleet longer to assemble (early-returns at 15).
+          wait-timeout: 600s
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
       - name: Build defconfig bzImage via the farm
