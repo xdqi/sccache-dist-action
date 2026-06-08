@@ -1,0 +1,54 @@
+name: smoke
+on: [workflow_dispatch]
+jobs:
+  workers:
+    strategy:
+      matrix: { idx: [1, 2, 3] }
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with: { go-version: '1.26' }
+      - uses: ./
+        with:
+          mode: worker
+          worker-index: ${{ matrix.idx }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with: { go-version: '1.26' }
+      - name: Kernel build deps + qemu
+        run: sudo apt-get update && sudo apt-get install -y flex bison libelf-dev bc libssl-dev qemu-system-x86
+      - id: farm
+        uses: ./
+        with:
+          mode: coordinator
+          expected-workers: 3
+          min-workers: 1
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+      - name: Build kernel via the farm
+        run: |
+          git clone --depth 1 https://github.com/torvalds/linux.git linux
+          cd linux
+          make tinyconfig
+          ./scripts/config --enable CONFIG_PRINTK --enable CONFIG_TTY \
+            --enable CONFIG_SERIAL_8250 --enable CONFIG_SERIAL_8250_CONSOLE --enable CONFIG_BINFMT_ELF
+          make olddefconfig
+          make -j"${SCCACHE_J:-6}" CC="sccache gcc" bzImage
+          test -f arch/x86/boot/bzImage
+          sccache -s
+      - name: Boot in QEMU
+        working-directory: linux
+        run: |
+          set +e
+          timeout 90 qemu-system-x86_64 -nographic -no-reboot \
+            -kernel arch/x86/boot/bzImage -append "console=ttyS0 panic=-1" 2>&1 | tee boot.log
+          set -e
+          grep -q "Linux version" boot.log || { echo "no banner"; exit 1; }
+          grep -Eq "VFS: Unable to mount root fs|No working init|Kernel panic" boot.log \
+            && echo "SMOKE boot = PASS" || { echo "did not reach init"; exit 1; }

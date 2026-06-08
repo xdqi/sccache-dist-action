@@ -1,0 +1,88 @@
+name: release
+# Build the prebuilt static Go binaries (+ attach the forked sccache engine
+# binaries) to a release. The JS wrapper downloads both at runtime.
+# Triggered by pushing vMAJOR.MINOR.PATCH, or manual dispatch with an existing tag.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build and upload assets for (e.g. v0.0.1)'
+        required: true
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,  goarch: amd64 }
+          - { goos: linux,  goarch: arm64 }
+          - { goos: linux,  goarch: arm   }
+          - { goos: linux,  goarch: '386' }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with: { go-version: '1.26' }
+      - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          out="sccache-dist-action-${GOOS}-${GOARCH}"
+          go build -trimpath -ldflags='-s -w' -o "$out" ./cmd/sccache-dist-action
+          ls -la "$out"
+          echo "ASSET=$out" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Resolve tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TAG_INPUT: ${{ github.event.inputs.tag }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$TAG_INPUT"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "Resolved tag: $TAG"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+      - name: Download built Go binaries
+        uses: actions/download-artifact@v6
+        with:
+          path: assets
+          pattern: sccache-dist-action-*
+          merge-multiple: true
+      - name: Download engine binaries (if an engine run produced them)
+        uses: actions/download-artifact@v6
+        continue-on-error: true
+        with:
+          name: engine
+          path: assets
+      - name: Create or reuse the release, then upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la assets
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          gh release upload "$TAG" assets/* --clobber
+          echo "Uploaded assets to release $TAG:"
+          gh release view "$TAG" --json assets --jq '.assets[].name'

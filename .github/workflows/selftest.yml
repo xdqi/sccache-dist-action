@@ -1,0 +1,47 @@
+name: selftest
+on: [workflow_dispatch]
+jobs:
+  workers:
+    strategy:
+      matrix: { idx: [1, 2] }
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with: { go-version: '1.26' }
+      - uses: ./
+        with:
+          mode: worker
+          worker-index: ${{ matrix.idx }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with: { go-version: '1.26' }
+      - name: Cache sccache objects
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-${{ runner.os }}-redis-${{ github.run_id }}
+          restore-keys: sccache-${{ runner.os }}-redis-
+      - id: farm
+        uses: ./
+        with:
+          mode: coordinator
+          expected-workers: 2
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+      - name: Build redis via the farm
+        run: |
+          echo "SCCACHE_J=$SCCACHE_J workers=$SCCACHE_WORKERS_ONLINE"
+          sccache --zero-stats || true
+          git clone --depth 1 https://github.com/redis/redis
+          cd redis
+          make -j"${SCCACHE_J:-4}" CC="sccache gcc" MALLOC=libc CFLAGS="-Wno-error" || true
+          echo "=== sccache -s ==="
+          sccache -s
+          sccache -s | grep -A1 "Successful distributed compiles" | grep -qE '[1-9]' \
+            && echo "DISTRIBUTION CONFIRMED" || { echo "no distribution"; exit 1; }
