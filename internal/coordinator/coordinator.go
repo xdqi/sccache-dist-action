@@ -52,7 +52,7 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 		return fmt.Errorf("tsnet listen scheduler: %w", err)
 	}
 	go acceptForward(schedExpose, func() (net.Conn, error) { return net.Dial("tcp", "127.0.0.1:10600") })
-	if _, err := sccachedist.StartScheduler(schedConf); err != nil {
+	if _, err := sccachedist.StartScheduler(schedConf, c.ServerLog); err != nil {
 		return err
 	}
 

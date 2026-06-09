@@ -19,6 +19,13 @@ type Config struct {
 	PollInterval    time.Duration
 	TeardownThresh  int
 	DistFallback    bool
+	// ServerLog is the env_logger directive injected as SCCACHE_LOG into the
+	// scheduler and server processes. sccache-dist only initializes its logger
+	// when SCCACHE_LOG is set, so this is what makes per-worker build logs
+	// visible. Empty disables logging entirely. Default "debug" surfaces the
+	// build lifecycle (toolchain load, performing build, docker ops); use
+	// "trace" to also see each compile command.
+	ServerLog string
 }
 
 func Load() (*Config, error) { return loadFrom(os.Getenv) }
@@ -34,6 +41,7 @@ func loadFrom(get func(string) string) (*Config, error) {
 		TeardownThresh: atoiOr(get("INPUT_TEARDOWN_THRESHOLD"), 5),
 		WaitTimeout:    durOr(get("INPUT_WAIT_TIMEOUT"), 300*time.Second),
 		DistFallback:   boolOr(get("INPUT_DIST_FALLBACK"), true),
+		ServerLog:      orDefault(get("INPUT_SERVER_LOG"), "debug"),
 	}
 	if c.Mode != "coordinator" && c.Mode != "worker" {
 		return nil, fmt.Errorf("mode must be coordinator|worker, got %q", c.Mode)

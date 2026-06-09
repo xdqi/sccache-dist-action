@@ -64,11 +64,24 @@ token = %q
 `, schedulerURL, token)
 }
 
+// logEnv builds the env for a sccache-dist subprocess: the base environment
+// plus SCCACHE_NO_DAEMON, and SCCACHE_LOG=<logLevel> when logLevel is non-empty.
+// sccache-dist only initializes its env_logger when SCCACHE_LOG is set, so this
+// is what surfaces per-process verbose build logs.
+func logEnv(logLevel string) []string {
+	env := append(os.Environ(), "SCCACHE_NO_DAEMON=1")
+	if logLevel != "" {
+		env = append(env, "SCCACHE_LOG="+logLevel)
+	}
+	return env
+}
+
 // StartScheduler launches `sccache-dist scheduler` in the foreground (caller
-// keeps the *exec.Cmd to kill on teardown). Logs to stderr/stdout.
-func StartScheduler(confPath string) (*exec.Cmd, error) {
+// keeps the *exec.Cmd to kill on teardown). Logs to stderr/stdout; logLevel is
+// the SCCACHE_LOG directive (e.g. "debug").
+func StartScheduler(confPath, logLevel string) (*exec.Cmd, error) {
 	cmd := exec.Command("sccache-dist", "scheduler", "--config", confPath)
-	cmd.Env = append(os.Environ(), "SCCACHE_NO_DAEMON=1")
+	cmd.Env = logEnv(logLevel)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -77,10 +90,12 @@ func StartScheduler(confPath string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-// StartServer launches `sccache-dist server`.
-func StartServer(confPath string) (*exec.Cmd, error) {
+// StartServer launches `sccache-dist server`. logLevel is the SCCACHE_LOG
+// directive (e.g. "debug"/"trace") injected so the worker emits verbose build
+// logs.
+func StartServer(confPath, logLevel string) (*exec.Cmd, error) {
 	cmd := exec.Command("sccache-dist", "server", "--config", confPath)
-	cmd.Env = append(os.Environ(), "SCCACHE_NO_DAEMON=1")
+	cmd.Env = logEnv(logLevel)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {

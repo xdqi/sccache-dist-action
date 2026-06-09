@@ -35324,6 +35324,7 @@ const INPUT_IDS = [
   'poll-interval',
   'teardown-threshold',
   'dist-fallback',
+  'server-log',
   'sccache-ref',
 ];
 

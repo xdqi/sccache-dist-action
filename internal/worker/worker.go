@@ -96,7 +96,7 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 	if err := sccachedist.WriteFile(confPath, conf); err != nil {
 		return err
 	}
-	srv, err := sccachedist.StartServer(confPath)
+	srv, err := sccachedist.StartServer(confPath, c.ServerLog)
 	if err != nil {
 		return err
 	}

@@ -34,6 +34,30 @@ func TestTotalJ(t *testing.T) {
 	}
 }
 
+func TestLogEnv(t *testing.T) {
+	hasPrefix := func(env []string, p string) bool {
+		for _, e := range env {
+			if strings.HasPrefix(e, p) {
+				return true
+			}
+		}
+		return false
+	}
+	// Non-empty level injects SCCACHE_LOG (what surfaces verbose build logs).
+	with := logEnv("debug")
+	if !hasPrefix(with, "SCCACHE_NO_DAEMON=1") {
+		t.Fatal("missing SCCACHE_NO_DAEMON")
+	}
+	if !hasPrefix(with, "SCCACHE_LOG=debug") {
+		t.Fatalf("expected SCCACHE_LOG=debug in env, got %v", with)
+	}
+	// Empty level disables logging: SCCACHE_LOG must not be set.
+	without := logEnv("")
+	if hasPrefix(without, "SCCACHE_LOG=") {
+		t.Fatalf("empty level must not set SCCACHE_LOG, got %v", without)
+	}
+}
+
 func TestWriteFile(t *testing.T) {
 	p := t.TempDir() + "/sub/conf.toml"
 	if err := WriteFile(p, "x=1"); err != nil {

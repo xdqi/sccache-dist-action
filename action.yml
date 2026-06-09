@@ -14,6 +14,7 @@ inputs:
   poll-interval:   { description: 'teardown poll interval', required: false, default: '1s' }
   teardown-threshold: { description: 'offline reads before worker exits', required: false, default: '5' }
   dist-fallback:   { description: 'SCCACHE_DIST_FALLBACK (fall back to local on non-distributable)', required: false, default: 'true' }
+  server-log:      { description: 'SCCACHE_LOG directive for scheduler/server verbose logs (e.g. debug, trace); empty disables', required: false, default: 'debug' }
   sccache-ref:     { description: 'forked sccache build to use', required: false, default: 'sccache-dist-poc-tweaks' }
   github-token:    { description: 'token for release download', required: false, default: '${{ github.token }}' }
 outputs:
