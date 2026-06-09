@@ -22,9 +22,12 @@ type Config struct {
 	// ServerLog is the env_logger directive injected as SCCACHE_LOG into the
 	// scheduler and server processes. sccache-dist only initializes its logger
 	// when SCCACHE_LOG is set, so this is what makes per-worker build logs
-	// visible. Empty disables logging entirely. Default "debug" surfaces the
-	// build lifecycle (toolchain load, performing build, docker ops); use
-	// "trace" to also see each compile command.
+	// visible. Empty disables logging entirely. The default
+	// "info,sccache_compile=trace" keeps an INFO baseline (server/scheduler
+	// status, warnings) and additionally surfaces the actual compiler argv,
+	// environment, exact docker/bwrap command line, and compiler output via the
+	// fork's dedicated sccache_compile target — without reqwest/tiny_http trace
+	// noise. Use "debug" for lifecycle only, or "trace" for everything.
 	ServerLog string
 }
 
@@ -41,7 +44,7 @@ func loadFrom(get func(string) string) (*Config, error) {
 		TeardownThresh: atoiOr(get("INPUT_TEARDOWN_THRESHOLD"), 5),
 		WaitTimeout:    durOr(get("INPUT_WAIT_TIMEOUT"), 300*time.Second),
 		DistFallback:   boolOr(get("INPUT_DIST_FALLBACK"), true),
-		ServerLog:      orDefault(get("INPUT_SERVER_LOG"), "debug"),
+		ServerLog:      orDefault(get("INPUT_SERVER_LOG"), "info,sccache_compile=trace"),
 	}
 	if c.Mode != "coordinator" && c.Mode != "worker" {
 		return nil, fmt.Errorf("mode must be coordinator|worker, got %q", c.Mode)

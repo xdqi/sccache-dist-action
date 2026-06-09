@@ -12,8 +12,8 @@ func TestLoadCoordinator(t *testing.T) {
 	if c.ExpectedWorkers != 3 || c.MinWorkers != 3 || !c.DistFallback {
 		t.Fatalf("got %+v", c)
 	}
-	if c.ServerLog != "debug" {
-		t.Fatalf("ServerLog default = %q, want debug", c.ServerLog)
+	if c.ServerLog != "info,sccache_compile=trace" {
+		t.Fatalf("ServerLog default = %q, want info,sccache_compile=trace", c.ServerLog)
 	}
 }
 
