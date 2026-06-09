@@ -7,7 +7,7 @@ name: smoke-defconfig
 # the "failed distributed -> local fallback" rate seen at lower worker counts.
 #
 # Unlike selftest/smoke (which use `uses: ./` to test the CURRENT checkout), this
-# workflow consumes the PUBLISHED action `xdqi/sccache-dist-action@v0.0.2` like a
+# workflow consumes the PUBLISHED action `xdqi/sccache-dist-action@v0.0.3` like a
 # real downstream user: the JS wrapper auto-downloads the Go binary AND the forked
 # sccache engine from that release (ensureEngine), so no checkout / setup-go /
 # manual engine install is needed.
@@ -19,7 +19,7 @@ jobs:
       matrix: { idx: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] }
     runs-on: ubuntu-latest
     steps:
-      - uses: xdqi/sccache-dist-action@v0.0.2
+      - uses: xdqi/sccache-dist-action@v0.0.3
         with:
           mode: worker
           worker-index: ${{ matrix.idx }}
@@ -31,7 +31,7 @@ jobs:
       - name: Kernel build deps + qemu
         run: sudo apt-get update && sudo apt-get install -y flex bison libelf-dev bc libssl-dev qemu-system-x86
       - id: farm
-        uses: xdqi/sccache-dist-action@v0.0.2
+        uses: xdqi/sccache-dist-action@v0.0.3
         with:
           mode: coordinator
           expected-workers: 15
