@@ -1,13 +1,19 @@
 name: engine
 # Build the forked sccache + sccache-dist (static musl) from github.com/xdqi/sccache
-# and upload as artifacts. release.yml attaches these to the release the JS
-# wrapper downloads. Manual dispatch.
+# and upload as artifacts. If `release_tag` is given, also attach the binaries to
+# that existing release (release.yml can't fetch this artifact cross-run, so the
+# engine is attached here directly). Manual dispatch.
 on:
   workflow_dispatch:
     inputs:
       ref:
         description: 'fork ref to build'
         default: 'sccache-dist-poc-tweaks'
+      release_tag:
+        description: 'existing release tag to attach the engine binaries to (e.g. v0.0.5); empty = artifact only'
+        default: ''
+permissions:
+  contents: write   # upload engine binaries to the release
 jobs:
   build-engine:
     runs-on: ubuntu-latest
@@ -21,16 +27,33 @@ jobs:
             set -e
             apt-get update >/dev/null && apt-get install -y --no-install-recommends pkg-config perl make musl-tools musl-dev >/dev/null
             rustup target add x86_64-unknown-linux-musl
-            cargo build --release --target x86_64-unknown-linux-musl --no-default-features --features="dist-client dist-server vendored-openssl"
+            cargo build --release --target x86_64-unknown-linux-musl --no-default-features --features="dist-client dist-server s3 vendored-openssl"
             mkdir -p /out
             cp target/x86_64-unknown-linux-musl/release/sccache      "/out/sccache-'"$REF"'-linux-amd64"
             cp target/x86_64-unknown-linux-musl/release/sccache-dist "/out/sccache-dist-'"$REF"'-linux-amd64"
           '
           ls -la out
+          # Fail loudly if the s3 backend isn't actually compiled in (the whole point
+          # of the `s3` feature): the OpenDAL S3 service leaves identifiable strings.
+          if ! strings -a out/sccache-"$REF"-linux-amd64 | grep -qiE 'opendal|services-s3|amazonaws|s3\.amazonaws'; then
+            echo "::error::built sccache has no S3 backend strings — the s3 feature did not take"; exit 1
+          fi
+          echo "S3 backend present in engine binary ✓"
       - uses: actions/upload-artifact@v4
         with:
           name: engine
           path: out/*
           if-no-files-found: error
+      - name: Attach engine binaries to the release (if a tag was given)
+        if: ${{ github.event.inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" >/dev/null 2>&1 || { echo "::error::release $TAG does not exist (push the tag first)"; exit 1; }
+          gh release upload "$TAG" out/* --clobber
+          echo "Attached engine binaries to release $TAG:"
+          gh release view "$TAG" --json assets --jq '.assets[].name'
 
 # (registered 2026-06-08T12:26:54Z)
