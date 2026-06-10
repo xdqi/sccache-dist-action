@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"time"
 
 	"github.com/xdqi/sccache-dist-action/internal/config"
 	"github.com/xdqi/sccache-dist-action/internal/coordinator"
@@ -52,7 +53,11 @@ func main() {
 		log.Fatalf("spawn forwarder: %v", err)
 	}
 	writePid(pid)
-	if !waitForEnvExport() {
+	// The forwarder only falls back to min-workers when wait-timeout expires,
+	// so the parent must outlive that deadline or the fallback is unreachable
+	// (run 27257400910: 14/15 workers healthy, parent gave up at a fixed 6min
+	// while the forwarder still had 4min of full-count wait left).
+	if !waitForEnvExport(c.WaitTimeout + time.Minute) {
 		log.Fatalf("forwarder did not export SCCACHE_J")
 	}
 	log.Printf("[coord] forwarder detached pid=%d; env exported", pid)

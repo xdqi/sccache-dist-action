@@ -3,6 +3,7 @@ package tsmesh
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"strings"
 	"time"
@@ -58,8 +59,31 @@ type Mesh struct {
 }
 
 // Up starts a tsnet node with the given hostname/tags/authkey and blocks until
-// it has joined the tailnet (or ctx expires).
+// it has joined the tailnet (or ctx expires). Transient control-plane failures
+// (e.g. an OAuth token POST timing out on a flaky runner network — run
+// 27257400910 lost worker 9 exactly this way) are retried with backoff rather
+// than killing the node one-shot.
 func Up(ctx context.Context, hostname, authKey, tags string) (*Mesh, error) {
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			log.Printf("[tsmesh] tsnet up failed (%v); retrying (attempt %d/3)", lastErr, attempt)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(10 * time.Second):
+			}
+		}
+		m, err := upOnce(ctx, hostname, authKey, tags)
+		if err == nil {
+			return m, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+func upOnce(ctx context.Context, hostname, authKey, tags string) (*Mesh, error) {
 	srv := &tsnet.Server{
 		Hostname:  hostname,
 		AuthKey:   authKey,

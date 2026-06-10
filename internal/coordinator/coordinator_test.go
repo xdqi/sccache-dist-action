@@ -2,16 +2,19 @@ package coordinator
 
 import "testing"
 
-func TestWorkerPort(t *testing.T) {
-	cases := map[string]int{
-		"123-worker-1": 10501,
-		"123-worker-2": 10502,
-		"123-worker-3": 10503,
-		"123-worker-x": 10501,
+func TestForwardSpec(t *testing.T) {
+	cases := map[int]struct {
+		port   int
+		target string
+	}{
+		1: {10501, "123-1-worker-1:10501"},
+		2: {10502, "123-1-worker-2:10501"},
+		3: {10503, "123-1-worker-3:10501"},
 	}
-	for host, want := range cases {
-		if got := workerPort(host); got != want {
-			t.Fatalf("%s: got %d want %d", host, got, want)
+	for idx, want := range cases {
+		port, target := forwardSpec("123-1-worker-", idx)
+		if port != want.port || target != want.target {
+			t.Fatalf("idx %d: got (%d, %s) want (%d, %s)", idx, port, target, want.port, want.target)
 		}
 	}
 }

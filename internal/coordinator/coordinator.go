@@ -8,26 +8,19 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 
 	"github.com/xdqi/sccache-dist-action/internal/config"
 	"github.com/xdqi/sccache-dist-action/internal/sccachedist"
 	"github.com/xdqi/sccache-dist-action/internal/tsmesh"
 )
 
-// workerPort maps a worker hostname (<run_prefix>-worker-<idx>) to the
-// coordinator-local forward port that MUST match the worker's self-assigned
-// public_addr: 10501 + (idx - 1). Falls back to 10501 if the suffix isn't a
-// number.
-func workerPort(host string) int {
-	idx := 1
-	if i := strings.LastIndex(host, "-"); i >= 0 {
-		if n, err := strconv.Atoi(host[i+1:]); err == nil && n >= 1 {
-			idx = n
-		}
-	}
-	return 10501 + (idx - 1)
+// forwardSpec maps a worker index to its coordinator-local forward port and
+// tsnet target. The port MUST match the worker's self-assigned public_addr
+// (127.0.0.1:10501 + idx - 1) and the target hostname the worker's index-derived
+// tsnet name (<run_prefix>-worker-<idx>, passed here as prefix+idx); the worker
+// server itself listens on tsnet :10501.
+func forwardSpec(workerPrefix string, idx int) (int, string) {
+	return 10501 + (idx - 1), fmt.Sprintf("%s%d:10501", workerPrefix, idx)
 }
 
 // Run executes the coordinator: join mesh, start scheduler, wait for workers,
@@ -70,13 +63,18 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 		slots = sccachedist.Nproc()
 	}
 
-	for _, w := range online {
-		lp := workerPort(w.Host)
+	// Forward a deterministic local port for EVERY expected worker, not just
+	// the ones online right now: with the min-workers fallback a slow worker
+	// can register with the scheduler after this point, and the scheduler then
+	// hands jobs to its advertised 127.0.0.1:<port> — which must already have
+	// a listener. Hostnames and ports are both index-derived, so no discovery
+	// is needed.
+	for idx := 1; idx <= c.ExpectedWorkers; idx++ {
+		lp, target := forwardSpec(prefix, idx)
 		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", lp))
 		if err != nil {
 			return fmt.Errorf("listen forward %d: %w", lp, err)
 		}
-		target := w.Host + ":10501" // worker server exposed on tsnet :10501
 		go acceptForward(ln, func() (net.Conn, error) {
 			return mesh.Dial(context.Background(), target)
 		})

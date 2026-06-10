@@ -48,12 +48,12 @@ func readPid() int {
 
 func killPid(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) }
 
-func waitForEnvExport() bool {
+func waitForEnvExport(d time.Duration) bool {
 	ge := os.Getenv("GITHUB_ENV")
 	if ge == "" {
 		return true
 	}
-	deadline := time.Now().Add(6 * time.Minute)
+	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
 		if b, err := os.ReadFile(ge); err == nil && strings.Contains(string(b), "SCCACHE_J=") {
 			return true
