@@ -100,6 +100,27 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 		return err
 	}
 
+	// Dedicated liveness port for the workers' probes: accept-and-close only.
+	// Probes MUST NOT pass through to the scheduler — at 15 workers × 1
+	// probe/s the scheduler's per-connection thread churn starved the build
+	// container of pids/threads (`fork: retry: Resource temporarily
+	// unavailable`, zig `thread constructor failed`; run 27287554600 attempt
+	// 2). Started after the scheduler, so a successful probe also implies the
+	// scheduler is up and the worker's first heartbeat will land.
+	liveLn, err := mesh.Listen(":10599")
+	if err != nil {
+		return fmt.Errorf("tsnet listen liveness: %w", err)
+	}
+	go func() {
+		for {
+			conn, err := liveLn.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+
 	prefix := c.RunPrefix + "-worker-"
 
 	// Forward a deterministic local port for EVERY expected worker, before

@@ -102,6 +102,13 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 	defer srv.Process.Kill()
 	log.Printf("[worker] server up (public_addr=%s), guarding coordinator", serverPublicAddr(idx))
 
+	// Guard cadence is deliberately slower than PollInterval: each probe is a
+	// real connection, and 15 workers probing every second was enough churn to
+	// matter. 10s × threshold(5) ≈ 50s teardown detection — plenty.
+	guardPoll := 10 * time.Second
+	if c.PollInterval > guardPoll {
+		guardPoll = c.PollInterval
+	}
 	g := &guard{threshold: c.TeardownThresh}
 	for {
 		if g.observe(probeCoordinator(mesh, coordHost)) {
@@ -111,20 +118,21 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(c.PollInterval):
+		case <-time.After(guardPoll):
 		}
 	}
 }
 
-// probeCoordinator reports whether the coordinator's scheduler port accepts a
-// connection over the tailnet RIGHT NOW — a real dial on the very path the
-// server's heartbeats use, immune to netmap presence-flag lag. A failed dial
-// costs its own timeout, so consecutive guard misses are spaced by real
-// unreachability, not by a flag going stale.
+// probeCoordinator reports whether the coordinator's dedicated liveness port
+// (:10599, accept-and-close, started together with the scheduler) answers a
+// real tsnet dial RIGHT NOW — immune to the netmap presence-flag lag, and by
+// design not touching the scheduler (whose per-connection thread churn starved
+// the build container when probes went to :10600). A failed dial costs its own
+// timeout, so consecutive guard misses are spaced by real unreachability.
 func probeCoordinator(mesh *tsmesh.Mesh, coordHost string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, err := mesh.Dial(ctx, coordHost+":10600")
+	conn, err := mesh.Dial(ctx, coordHost+":10599")
 	if err != nil {
 		return false
 	}
