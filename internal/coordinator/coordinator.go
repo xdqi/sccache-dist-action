@@ -2,17 +2,68 @@ package coordinator
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/xdqi/sccache-dist-action/internal/config"
 	"github.com/xdqi/sccache-dist-action/internal/sccachedist"
 	"github.com/xdqi/sccache-dist-action/internal/tsmesh"
 )
+
+// registeredServers asks the LOCAL scheduler how many build servers are
+// registered — i.e. whose heartbeats arrive over real tsnet connections. This
+// is ground truth for farm readiness: the tailnet netmap .Online flags used
+// before lagged in BOTH directions (run 27287554600 — the coordinator counted
+// 5/15 "online" while all 15 workers were registered and heartbeating, and the
+// workers' guard simultaneously saw the coordinator "offline" and exited).
+// The status endpoint is unauthenticated and serves JSON under this Accept.
+func registeredServers() (int, error) {
+	req, err := http.NewRequest("GET", "http://127.0.0.1:10600/api/v1/scheduler/status", nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Accept", "application/json")
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	var st struct {
+		NumServers int `json:"num_servers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		return 0, err
+	}
+	return st.NumServers, nil
+}
+
+// waitForRegisteredServers polls the scheduler until `expected` servers have
+// registered, or until ctx expires — after which the current count is returned
+// (the caller applies the min-workers floor). Same wait semantics as the old
+// tsmesh.WaitForWorkers, but counting real registrations instead of netmap
+// presence flags.
+func waitForRegisteredServers(ctx context.Context, expected int, poll time.Duration) int {
+	for {
+		n, err := registeredServers()
+		if err == nil && n >= expected {
+			return n
+		}
+		select {
+		case <-ctx.Done():
+			n, _ := registeredServers()
+			return n
+		case <-time.After(poll):
+		}
+	}
+}
 
 // forwardSpec maps a worker index to its coordinator-local forward port and
 // tsnet target. The port MUST match the worker's self-assigned public_addr
@@ -50,25 +101,12 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 	}
 
 	prefix := c.RunPrefix + "-worker-"
-	waitCtx, cancel := context.WithTimeout(ctx, c.WaitTimeout)
-	defer cancel()
-	online, _ := mesh.WaitForWorkers(waitCtx, prefix, c.ExpectedWorkers, c.MinWorkers, c.PollInterval)
-	if len(online) < c.MinWorkers {
-		return fmt.Errorf("only %d/%d workers online", len(online), c.MinWorkers)
-	}
-	log.Printf("[coord] %d/%d workers online", len(online), c.ExpectedWorkers)
 
-	slots := c.Slots
-	if slots == 0 {
-		slots = sccachedist.Nproc()
-	}
-
-	// Forward a deterministic local port for EVERY expected worker, not just
-	// the ones online right now: with the min-workers fallback a slow worker
-	// can register with the scheduler after this point, and the scheduler then
-	// hands jobs to its advertised 127.0.0.1:<port> — which must already have
-	// a listener. Hostnames and ports are both index-derived, so no discovery
-	// is needed.
+	// Forward a deterministic local port for EVERY expected worker, before
+	// waiting: a worker that registers with the scheduler at any point must
+	// already have its forward listener, or the scheduler hands jobs to its
+	// advertised 127.0.0.1:<port> and they all fail. Hostnames and ports are
+	// both index-derived, so no discovery is needed.
 	for idx := 1; idx <= c.ExpectedWorkers; idx++ {
 		lp, target := forwardSpec(prefix, idx)
 		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", lp))
@@ -81,17 +119,30 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 		log.Printf("[coord] forward 127.0.0.1:%d -> tsnet %s", lp, target)
 	}
 
+	waitCtx, cancel := context.WithTimeout(ctx, c.WaitTimeout)
+	defer cancel()
+	registered := waitForRegisteredServers(waitCtx, c.ExpectedWorkers, c.PollInterval)
+	if registered < c.MinWorkers {
+		return fmt.Errorf("only %d/%d workers registered with the scheduler", registered, c.MinWorkers)
+	}
+	log.Printf("[coord] %d/%d workers registered", registered, c.ExpectedWorkers)
+
+	slots := c.Slots
+	if slots == 0 {
+		slots = sccachedist.Nproc()
+	}
+
 	home, _ := os.UserHomeDir()
 	cfgPath := filepath.Join(home, ".config", "sccache", "config")
 	if err := sccachedist.WriteFile(cfgPath, sccachedist.ClientConfig(token, "http://127.0.0.1:10600")); err != nil {
 		return err
 	}
 
-	j := sccachedist.TotalJ(len(online), slots)
+	j := sccachedist.TotalJ(registered, slots)
 	if ge := os.Getenv("GITHUB_ENV"); ge != "" {
 		if f, err := os.OpenFile(ge, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
 			fmt.Fprintf(f, "SCCACHE_J=%d\n", j)
-			fmt.Fprintf(f, "SCCACHE_WORKERS_ONLINE=%d\n", len(online))
+			fmt.Fprintf(f, "SCCACHE_WORKERS_ONLINE=%d\n", registered)
 			fmt.Fprintf(f, "SCCACHE_DIR=%s\n", filepath.Join(home, ".cache", "sccache"))
 			fmt.Fprintf(f, "SCCACHE_DIST_FALLBACK=%s\n", boolStr(c.DistFallback))
 			f.Close()
@@ -99,13 +150,13 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 	}
 	if gout := os.Getenv("GITHUB_OUTPUT"); gout != "" {
 		if f, err := os.OpenFile(gout, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
-			fmt.Fprintf(f, "workers-online=%d\n", len(online))
+			fmt.Fprintf(f, "workers-online=%d\n", registered)
 			fmt.Fprintf(f, "sccache-j=%d\n", j)
 			fmt.Fprintf(f, "scheduler-url=http://127.0.0.1:10600\n")
 			f.Close()
 		}
 	}
-	log.Printf("[coord] exported SCCACHE_J=%d, %d workers; client config at %s", j, len(online), cfgPath)
+	log.Printf("[coord] exported SCCACHE_J=%d, %d workers; client config at %s", j, registered, cfgPath)
 	return nil
 }
 

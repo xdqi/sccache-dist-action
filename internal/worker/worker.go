@@ -74,14 +74,13 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 		return net.Dial("tcp", "127.0.0.1:10501")
 	})
 
-	// Wait until the coordinator (hence scheduler) is online before starting the
-	// server, so the server's first heartbeat lands.
+	// Wait until the coordinator's scheduler is actually reachable before
+	// starting the server, so the server's first heartbeat lands. This is a
+	// REAL tsnet dial on the same path heartbeats use — the netmap .Online
+	// flag used before lags in both directions (run 27287554600: workers
+	// "saw" the coordinator offline and exited while heartbeats flowed).
 	log.Printf("[worker] %s up (idx=%d), waiting for coordinator %s", hostname, idx, coordHost)
-	for {
-		peers, _ := mesh.Peers(ctx)
-		if tsmesh.PresentOnline(peers, coordHost) {
-			break
-		}
+	for !probeCoordinator(mesh, coordHost) {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -105,8 +104,7 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 
 	g := &guard{threshold: c.TeardownThresh}
 	for {
-		peers, _ := mesh.Peers(ctx)
-		if g.observe(tsmesh.PresentOnline(peers, coordHost)) {
+		if g.observe(probeCoordinator(mesh, coordHost)) {
 			log.Printf("[worker] coordinator gone %dx -> exiting", c.TeardownThresh)
 			return nil
 		}
@@ -116,4 +114,20 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 		case <-time.After(c.PollInterval):
 		}
 	}
+}
+
+// probeCoordinator reports whether the coordinator's scheduler port accepts a
+// connection over the tailnet RIGHT NOW — a real dial on the very path the
+// server's heartbeats use, immune to netmap presence-flag lag. A failed dial
+// costs its own timeout, so consecutive guard misses are spaced by real
+// unreachability, not by a flag going stale.
+func probeCoordinator(mesh *tsmesh.Mesh, coordHost string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := mesh.Dial(ctx, coordHost+":10600")
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
