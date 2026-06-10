@@ -9,7 +9,9 @@ inputs:
   wait-timeout:    { description: 'max wait for workers', required: false, default: '300s' }
   worker-index:    { description: 'unique per worker (matrix idx)', required: false }
   tags:            { description: 'tailnet tags', required: false, default: 'tag:ci-sccache' }
-  run-prefix:      { description: 'hostname namespacing', required: false, default: '${{ github.run_id }}' }
+  # Default includes the attempt: re-runs reuse run_id, and stale ephemeral
+  # tailnet nodes from the previous attempt shadow same-named new ones.
+  run-prefix:      { description: 'hostname namespacing', required: false, default: '${{ github.run_id }}-${{ github.run_attempt }}' }
   slots:           { description: 'per-worker concurrent jobs (0=nproc)', required: false, default: '0' }
   poll-interval:   { description: 'teardown poll interval', required: false, default: '1s' }
   teardown-threshold: { description: 'offline reads before worker exits', required: false, default: '5' }
