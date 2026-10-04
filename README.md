@@ -51,7 +51,7 @@ Each patch is self-contained and its commit message carries the full rationale.
 | ----- | --- |
 | Never distribute assembly; compile `.S`/`.s` locally | The assembler resolves `.incbin`/`.include` against files that aren't shipped as dist inputs (e.g. the kernel's `rmpiggy.S`). distcc makes the same choice. |
 | Pack special-file inputs (e.g. `/dev/null`) as regular files | kbuild probes flags with `gcc <flag> -c /dev/null`; a char-device tar entry can't be unpacked without `CAP_MKNOD`, so every probe fell back to local. |
-| Make the docker builder robust on modern Docker | Fixes a `docker cp -` pipe deadlock, a hang copying into a never-started container, and `kill -9 -1` killing the container's init. |
+| Make the docker builder robust on modern Docker | `docker cp -` hung forever because its stdin never reached EOF (upstream's one-line fix for the same bug is [mozilla/sccache#2806](https://github.com/mozilla/sccache/pull/2806)). |
 | Native `zig cc` / `zig c++` as a distributable compiler | Detects `zig cc`/`zig c++` and packages the zig binary plus its `lib/` tree, so zig cross toolchains distribute like gcc/clang. |
 | Key the compiler-info cache by zig subcommand | `zig cc` and `zig c++` are the same executable; without this the first-seen subcommand's identity leaked into the other. |
 | Rewrite zig's `-x <*-cpp-output>` to the base language | zig rejects the `*-cpp-output` names; dropping them made `-x c++` on a `.c` file compile as C. |
