@@ -40,6 +40,37 @@ toolchains to the workers).
   `sccache-dist-poc-tweaks`) and **downloaded at runtime** by the JS wrapper
   from a release asset; nothing is compiled on the critical path.
 
+## The sccache engine
+
+The engine is upstream sccache **v0.18.0** plus a short patch series, kept as
+a linear branch on top of the upstream tag:
+[`xdqi/sccache@sccache-dist-poc-tweaks`](https://github.com/xdqi/sccache/commits/sccache-dist-poc-tweaks).
+Each patch is self-contained and its commit message carries the full rationale.
+
+| Patch | Why |
+| ----- | --- |
+| Never distribute assembly; compile `.S`/`.s` locally | The assembler resolves `.incbin`/`.include` against files that aren't shipped as dist inputs (e.g. the kernel's `rmpiggy.S`). distcc makes the same choice. |
+| Pack special-file inputs (e.g. `/dev/null`) as regular files | kbuild probes flags with `gcc <flag> -c /dev/null`; a char-device tar entry can't be unpacked without `CAP_MKNOD`, so every probe fell back to local. |
+| Make the docker builder robust on modern Docker | Fixes a `docker cp -` pipe deadlock, a hang copying into a never-started container, and `kill -9 -1` killing the container's init. |
+| Native `zig cc` / `zig c++` as a distributable compiler | Detects `zig cc`/`zig c++` and packages the zig binary plus its `lib/` tree, so zig cross toolchains distribute like gcc/clang. |
+| Key the compiler-info cache by zig subcommand | `zig cc` and `zig c++` are the same executable; without this the first-seen subcommand's identity leaked into the other. |
+| Rewrite zig's `-x <*-cpp-output>` to the base language | zig rejects the `*-cpp-output` names; dropping them made `-x c++` on a `.c` file compile as C. |
+| Lexically simplify mid-path `..` in the dist input argv | The packager stores the input at the simplified path, so `gcc/../libgcc/foo.c` didn't exist on the server. |
+| Break scheduler load ties randomly | Ties always went to the same servers in `HashMap` scan order, so one worker took most of the jobs. |
+| Scope compile argv/env/output to the `sccache_compile` log target | `SCCACHE_LOG=sccache_compile=trace` shows just the compiler invocations on a server. |
+
+To build the engine yourself (the same command [`engine.yml`](.github/workflows/engine.yml)
+runs, producing static musl binaries):
+
+```sh
+git clone --branch sccache-dist-poc-tweaks https://github.com/xdqi/sccache.git
+cd sccache
+rustup target add x86_64-unknown-linux-musl   # needs musl-tools on Debian/Ubuntu
+cargo build --release --target x86_64-unknown-linux-musl --no-default-features \
+  --features="dist-client dist-server s3 vendored-openssl"
+# -> target/x86_64-unknown-linux-musl/release/{sccache,sccache-dist}
+```
+
 ## Quick start
 
 Two jobs: a `workers` matrix that brings up the farm, and a `build`
