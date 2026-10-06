@@ -9,8 +9,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/xdqi/sccache-dist-action/internal/config"
@@ -80,19 +83,7 @@ func forwardSpec(workerPrefix string, idx int) (int, string) {
 // forward a local port per worker over tsnet, write the client config, export
 // env, then return (the caller blocks until job end).
 func Run(ctx context.Context, c *config.Config, hostname string) error {
-	// This process outlives the step, and once the step ends the runner keeps
-	// draining its stdout without printing it. Keep a copy of this log and
-	// the scheduler's in a file a later upload-artifact step can collect. File
-	// first: io.MultiWriter stops at the first writer that fails.
-	logPath := sccachedist.ConfPath("sccache-dist-coordinator.log")
-	var logw io.Writer = os.Stdout
-	if f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
-		logw = io.MultiWriter(f, os.Stdout)
-		log.SetOutput(logw)
-	} else {
-		log.Printf("[coord] no log file (%v); logging to stdout only", err)
-		logPath = ""
-	}
+	logw, logPath := openLog(sccachedist.ConfPath("sccache-dist-coordinator.log"))
 
 	mesh, err := tsmesh.Up(ctx, hostname, c.OAuthSecret, c.Tags)
 	if err != nil {
@@ -203,6 +194,50 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 	}
 	log.Printf("[coord] exported SCCACHE_J=%d, %d workers; client config at %s", j, registered, cfgPath)
 	return nil
+}
+
+// openLog points this process's log at path as well as stdout, and returns
+// the writer for the scheduler's output plus the path, or "" without a file.
+// This process outlives the step, so the file is the copy a later
+// upload-artifact step collects.
+//
+// Once the step ends, its stdout may stop taking writes. On a host runner the
+// runner keeps draining it; in a container job it is a docker exec stream
+// that closes, and v0.0.9's first status line after that killed this process
+// with SIGPIPE, taking the coordinator's tailnet node down, so every worker
+// left (msys2-cross run 37450353873). So SIGPIPE is ignored, and the first
+// failed write to stdout stops further ones while the file keeps everything.
+func openLog(path string) (io.Writer, string) {
+	signal.Ignore(syscall.SIGPIPE)
+	out := &stdoutUntilBroken{w: os.Stdout}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		log.SetOutput(out)
+		log.Printf("[coord] no log file (%v); logging to stdout only", err)
+		return out, ""
+	}
+	// File first: io.MultiWriter stops at the first writer that fails, and
+	// out never reports a failure.
+	w := io.MultiWriter(f, out)
+	log.SetOutput(w)
+	return w, path
+}
+
+// stdoutUntilBroken writes to w until a write fails, then discards. It always
+// reports success, so a writer after it in an io.MultiWriter still runs and a
+// child process copying into it never sees an error.
+type stdoutUntilBroken struct {
+	w      io.Writer
+	broken atomic.Bool
+}
+
+func (s *stdoutUntilBroken) Write(p []byte) (int, error) {
+	if !s.broken.Load() {
+		if _, err := s.w.Write(p); err != nil {
+			s.broken.Store(true)
+		}
+	}
+	return len(p), nil
 }
 
 // logStatus logs, every statusInterval for the life of the forwarder, how many
