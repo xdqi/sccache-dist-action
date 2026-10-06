@@ -23,6 +23,7 @@ outputs:
   workers-online: { description: 'participating workers' }
   sccache-j:      { description: 'suggested -j (sum of worker slots)' }
   scheduler-url:  { description: 'coordinator scheduler URL' }
+  log-file:       { description: 'coordinator log file (forwarder + scheduler)' }
 runs:
   using: 'node24'
   main: 'dist/index.js'

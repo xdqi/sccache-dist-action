@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/xdqi/sccache-dist-action/internal/config"
+	"github.com/xdqi/sccache-dist-action/internal/proxy"
 	"github.com/xdqi/sccache-dist-action/internal/sccachedist"
 	"github.com/xdqi/sccache-dist-action/internal/tsmesh"
 )
@@ -78,6 +80,20 @@ func forwardSpec(workerPrefix string, idx int) (int, string) {
 // forward a local port per worker over tsnet, write the client config, export
 // env, then return (the caller blocks until job end).
 func Run(ctx context.Context, c *config.Config, hostname string) error {
+	// This process outlives the step, and once the step ends the runner keeps
+	// draining its stdout without printing it. Keep a copy of this log and
+	// the scheduler's in a file a later upload-artifact step can collect. File
+	// first: io.MultiWriter stops at the first writer that fails.
+	logPath := sccachedist.ConfPath("sccache-dist-coordinator.log")
+	var logw io.Writer = os.Stdout
+	if f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+		logw = io.MultiWriter(f, os.Stdout)
+		log.SetOutput(logw)
+	} else {
+		log.Printf("[coord] no log file (%v); logging to stdout only", err)
+		logPath = ""
+	}
+
 	mesh, err := tsmesh.Up(ctx, hostname, c.OAuthSecret, c.Tags)
 	if err != nil {
 		return err
@@ -95,8 +111,9 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 	if err != nil {
 		return fmt.Errorf("tsnet listen scheduler: %w", err)
 	}
-	go acceptForward(schedExpose, func() (net.Conn, error) { return net.Dial("tcp", "127.0.0.1:10600") })
-	if _, err := sccachedist.StartScheduler(schedConf, c.ServerLog); err != nil {
+	schedFwd := proxy.New("scheduler exposure", proxy.Local("127.0.0.1:10600"))
+	go schedFwd.Serve(schedExpose)
+	if _, err := sccachedist.StartScheduler(schedConf, c.ServerLog, logw); err != nil {
 		return err
 	}
 
@@ -128,17 +145,21 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 	// already have its forward listener, or the scheduler hands jobs to its
 	// advertised 127.0.0.1:<port> and they all fail. Hostnames and ports are
 	// both index-derived, so no discovery is needed.
+	workerFwds := make([]*proxy.Forwarder, c.ExpectedWorkers)
 	for idx := 1; idx <= c.ExpectedWorkers; idx++ {
 		lp, target := forwardSpec(prefix, idx)
 		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", lp))
 		if err != nil {
 			return fmt.Errorf("listen forward %d: %w", lp, err)
 		}
-		go acceptForward(ln, func() (net.Conn, error) {
-			return mesh.Dial(context.Background(), target)
+		f := proxy.New(fmt.Sprintf("worker %d", idx), func(ctx context.Context) (net.Conn, error) {
+			return mesh.Dial(ctx, target)
 		})
+		go f.Serve(ln)
+		workerFwds[idx-1] = f
 		log.Printf("[coord] forward 127.0.0.1:%d -> tsnet %s", lp, target)
 	}
+	go logStatus(mesh, prefix, schedFwd, workerFwds)
 
 	waitCtx, cancel := context.WithTimeout(ctx, c.WaitTimeout)
 	defer cancel()
@@ -160,6 +181,17 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 	}
 
 	j := sccachedist.TotalJ(registered, slots)
+	// Outputs before env: the parent step returns as soon as SCCACHE_J shows
+	// up in GITHUB_ENV, and the runner reads GITHUB_OUTPUT when it does.
+	if gout := os.Getenv("GITHUB_OUTPUT"); gout != "" {
+		if f, err := os.OpenFile(gout, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			fmt.Fprintf(f, "workers-online=%d\n", registered)
+			fmt.Fprintf(f, "sccache-j=%d\n", j)
+			fmt.Fprintf(f, "scheduler-url=http://127.0.0.1:10600\n")
+			fmt.Fprintf(f, "log-file=%s\n", logPath)
+			f.Close()
+		}
+	}
 	if ge := os.Getenv("GITHUB_ENV"); ge != "" {
 		if f, err := os.OpenFile(ge, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
 			fmt.Fprintf(f, "SCCACHE_J=%d\n", j)
@@ -169,36 +201,32 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 			f.Close()
 		}
 	}
-	if gout := os.Getenv("GITHUB_OUTPUT"); gout != "" {
-		if f, err := os.OpenFile(gout, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
-			fmt.Fprintf(f, "workers-online=%d\n", registered)
-			fmt.Fprintf(f, "sccache-j=%d\n", j)
-			fmt.Fprintf(f, "scheduler-url=http://127.0.0.1:10600\n")
-			f.Close()
-		}
-	}
 	log.Printf("[coord] exported SCCACHE_J=%d, %d workers; client config at %s", j, registered, cfgPath)
 	return nil
 }
 
-func acceptForward(ln net.Listener, dial func() (net.Conn, error)) {
+// logStatus logs, every statusInterval for the life of the forwarder, how many
+// servers the scheduler has registered, each forward's relay counters, and
+// the tailnet path to each worker, so a stall can be matched to a dead
+// forward or a path change in the log file.
+func logStatus(mesh *tsmesh.Mesh, workerPrefix string, schedFwd *proxy.Forwarder, workerFwds []*proxy.Forwarder) {
 	for {
-		c, err := ln.Accept()
+		time.Sleep(statusInterval)
+		n, err := registeredServers()
+		servers := fmt.Sprint(n)
 		if err != nil {
-			return
+			servers = "? (" + err.Error() + ")"
 		}
-		go func() {
-			defer c.Close()
-			r, err := dial()
-			if err != nil {
-				return
-			}
-			defer r.Close()
-			go io.Copy(r, c)
-			io.Copy(c, r)
-		}()
+		log.Printf("[coord] status: servers registered=%s goroutines=%d; %s",
+			servers, runtime.NumGoroutine(), schedFwd.Status())
+		peers, _ := mesh.Peers(context.Background())
+		for i, f := range workerFwds {
+			log.Printf("[coord]   %s; via %s", f.Status(), tsmesh.PathTo(peers, fmt.Sprintf("%s%d", workerPrefix, i+1)))
+		}
 	}
 }
+
+const statusInterval = 30 * time.Second
 
 func boolStr(b bool) string {
 	if b {

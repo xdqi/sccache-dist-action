@@ -6,12 +6,26 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"strconv"
 	"time"
 
 	"github.com/xdqi/sccache-dist-action/internal/config"
+	"github.com/xdqi/sccache-dist-action/internal/proxy"
 	"github.com/xdqi/sccache-dist-action/internal/sccachedist"
 	"github.com/xdqi/sccache-dist-action/internal/tsmesh"
+)
+
+// Server supervision: a probe every 10 s with a 15 s timeout, restart after 3
+// misses in a row, so a stuck server is replaced within about a minute. A
+// healthy server under load answers well inside that: its accept queue would
+// have to stay over 15 s deep, by which point the scheduler's own 30 s
+// assign_job timeouts are already failing jobs.
+const (
+	serverProbeInterval  = 10 * time.Second
+	serverProbeTimeout   = 15 * time.Second
+	serverProbeThreshold = 3
+	statusInterval       = 30 * time.Second
 )
 
 type guard struct {
@@ -60,9 +74,10 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 	if err != nil {
 		return fmt.Errorf("listen scheduler bridge: %w", err)
 	}
-	go forward(schedLn, func() (net.Conn, error) {
-		return mesh.Dial(context.Background(), coordHost+":10600")
+	schedFwd := proxy.New("scheduler bridge", func(ctx context.Context) (net.Conn, error) {
+		return mesh.Dial(ctx, coordHost+":10600")
 	})
+	go schedFwd.Serve(schedLn)
 
 	// Expose the local server (:10501) over tsnet so the coordinator's forward
 	// bridge can reach it.
@@ -70,9 +85,8 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 	if err != nil {
 		return fmt.Errorf("tsnet listen server: %w", err)
 	}
-	go forward(exposeLn, func() (net.Conn, error) {
-		return net.Dial("tcp", "127.0.0.1:10501")
-	})
+	exposeFwd := proxy.New("server exposure", proxy.Local("127.0.0.1:10501"))
+	go exposeFwd.Serve(exposeLn)
 
 	// Wait until the coordinator's scheduler is actually reachable before
 	// starting the server, so the server's first heartbeat lands. This is a
@@ -95,12 +109,40 @@ func Run(ctx context.Context, c *config.Config, hostname string) error {
 	if err := sccachedist.WriteFile(confPath, conf); err != nil {
 		return err
 	}
-	srv, err := sccachedist.StartServer(confPath, c.ServerLog)
-	if err != nil {
+	sup := &supervisor{
+		start: func() (*exec.Cmd, error) { return sccachedist.StartServer(confPath, c.ServerLog) },
+		probe: func(ctx context.Context) error {
+			return probeServer(ctx, "127.0.0.1:10501", serverProbeTimeout)
+		},
+		interval:  serverProbeInterval,
+		threshold: serverProbeThreshold,
+		minUptime: serverProbeInterval,
+	}
+	if err := sup.launch(); err != nil {
 		return err
 	}
-	defer srv.Process.Kill()
+	supCtx, stopSup := context.WithCancel(ctx)
+	supDone := make(chan struct{})
+	go func() { sup.run(supCtx); close(supDone) }()
+	// Kills whichever server is current when the worker leaves.
+	defer func() { stopSup(); <-supDone }()
 	log.Printf("[worker] server up (public_addr=%s), guarding coordinator", serverPublicAddr(idx))
+
+	go func() {
+		for {
+			select {
+			case <-supCtx.Done():
+				return
+			case <-time.After(statusInterval):
+			}
+			path := "unknown"
+			if peers, err := mesh.Peers(supCtx); err == nil {
+				path = tsmesh.PathTo(peers, coordHost)
+			}
+			log.Printf("[worker] status: coordinator via %s; server restarts=%d; %s; %s",
+				path, sup.restarts.Load(), schedFwd.Status(), exposeFwd.Status())
+		}
+	}()
 
 	// Guard cadence is deliberately slower than PollInterval: each probe is a
 	// real connection, and 15 workers probing every second was enough churn to

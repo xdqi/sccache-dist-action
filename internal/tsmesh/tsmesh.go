@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"tailscale.com/client/local"
+	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tsnet"
 )
 
@@ -17,6 +18,7 @@ type Peer struct {
 	Host   string
 	Online bool
 	IP     string
+	Path   string // how traffic reaches it, see peerPath
 }
 
 // FilterOnline returns peers whose hostname starts with prefix and are Online.
@@ -38,6 +40,31 @@ func PresentOnline(peers []Peer, host string) bool {
 		}
 	}
 	return false
+}
+
+// PathTo returns the Path of the peer with exactly this hostname.
+func PathTo(peers []Peer, host string) string {
+	for _, p := range peers {
+		if p.Host == host {
+			return p.Path
+		}
+	}
+	return "not in netmap"
+}
+
+// peerPath says how WireGuard traffic currently reaches a peer: a direct UDP
+// endpoint, a peer relay, or a DERP region. Logged periodically so a stall in
+// the farm can be matched to a path change.
+func peerPath(ps *ipnstate.PeerStatus) string {
+	switch {
+	case ps.CurAddr != "":
+		return "direct " + ps.CurAddr
+	case ps.PeerRelay != "":
+		return "peer-relay " + ps.PeerRelay
+	case ps.Relay != "":
+		return "derp " + ps.Relay
+	}
+	return "none"
 }
 
 // splitTags turns "tag:a,tag:b" into ["tag:a","tag:b"], trimming spaces and
@@ -119,7 +146,7 @@ func (m *Mesh) Peers(ctx context.Context) ([]Peer, error) {
 		if len(ps.TailscaleIPs) > 0 {
 			ip = ps.TailscaleIPs[0].String()
 		}
-		out = append(out, Peer{Host: ps.HostName, Online: ps.Online, IP: ip})
+		out = append(out, Peer{Host: ps.HostName, Online: ps.Online, IP: ip, Path: peerPath(ps)})
 	}
 	return out, nil
 }

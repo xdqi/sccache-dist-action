@@ -35,6 +35,11 @@ toolchains to the workers).
   worker watches the coordinator's tailnet node and **exits when the
   coordinator goes offline** (after `teardown-threshold` consecutive offline
   reads), so worker jobs never hang past the build they were serving.
+- Each worker also **supervises its `sccache-dist server`**: it probes the
+  server over loopback every 10 s and restarts it if it exits or misses 3
+  probes in a row. That is the only reaction to an unhealthy server; leaving
+  stays tied to the coordinator going offline. See
+  [Self-healing and diagnostics](#self-healing-and-diagnostics).
 - The engine binaries (`sccache` + `sccache-dist`) are built from the fork
   [`github.com/xdqi/sccache`](https://github.com/xdqi/sccache) (branch
   `sccache-dist-poc-tweaks`) and **downloaded at runtime** by the JS wrapper
@@ -178,6 +183,7 @@ nothing to restore.
 | `workers-online` | Number of workers that actually registered and are participating. |
 | `sccache-j`      | Suggested `-j` value (sum of worker slots). |
 | `scheduler-url`  | The coordinator's scheduler URL. |
+| `log-file`       | Coordinator log file (forwarder + scheduler), written for the whole job. Empty if it couldn't be created. |
 
 ## Exported environment for the build step
 
@@ -193,6 +199,48 @@ your build command:
 
 The coordinator also writes `~/.config/sccache/config` so the sccache client
 knows how to reach the scheduler over the tailnet.
+
+## Self-healing and diagnostics
+
+`sccache-dist server` answers HTTPS through tiny_http, which does every TLS
+handshake inside its single accept thread, with no timeout. One connection
+that stalls mid-handshake stops the server from accepting anything more.
+Its heartbeat runs on a separate thread, so the scheduler keeps the server
+registered and every job it assigns there waits out a 30 s timeout before
+the client falls back to a local compile. Under a cold kernel build this
+turned a 2-worker farm into a 16-objects-a-minute crawl. The defenses:
+
+- **Forwards pass a closed connection on.** When one side of a relayed
+  connection reaches EOF, the forward half-closes the other side, so a
+  scheduler or client that gives up shows up as a closed connection at the
+  server, and the stalled handshake fails instead of hanging. Dials over the
+  tailnet time out after 10 s.
+- **The worker supervises its server.** Every 10 s it sends the server, over
+  loopback, an `assign_job` with no job token, which the server must refuse
+  with a 401 (not logged). Three misses in a row (15 s timeout each), or the
+  process exiting, and the worker restarts the server. The new process
+  registers with a fresh nonce, which also makes the scheduler drop jobs it
+  had stuck on the old one. Probes never cross the tailnet, so a slow path
+  can't trigger a restart. A restart never ends the worker.
+- **Status lines every 30 s.** Each relay hop logs active and total
+  connections, failed dials and its slowest dial, plus the tailnet path to the
+  peer (`direct <addr>`, `peer-relay <addr>` or `derp <region>`). Workers log
+  their server restart count; the coordinator logs how many servers the
+  scheduler has registered.
+- **Coordinator log file.** The coordinator's forwarder outlives its setup
+  step, and after that step the runner no longer prints its output. It also
+  writes everything, the scheduler's log included, to the `log-file` output
+  path. Collect it at the end of the job:
+
+```yaml
+      - id: farm
+        uses: xdqi/sccache-dist-action@v1
+        with: { mode: coordinator, expected-workers: 3, oauth-secret: '${{ secrets.TS_OAUTH_SECRET }}' }
+      # ... build steps ...
+      - if: always() && steps.farm.outputs.log-file != ''
+        uses: actions/upload-artifact@v4
+        with: { name: sccache-dist-coordinator-log, path: '${{ steps.farm.outputs.log-file }}' }
+```
 
 ## Scope & limitations
 

@@ -2,6 +2,7 @@ package sccachedist
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,13 +78,13 @@ func logEnv(logLevel string) []string {
 }
 
 // StartScheduler launches `sccache-dist scheduler` in the foreground (caller
-// keeps the *exec.Cmd to kill on teardown). Logs to stderr/stdout; logLevel is
-// the SCCACHE_LOG directive (e.g. "debug").
-func StartScheduler(confPath, logLevel string) (*exec.Cmd, error) {
+// keeps the *exec.Cmd to kill on teardown). Logs to out; logLevel is the
+// SCCACHE_LOG directive (e.g. "debug").
+func StartScheduler(confPath, logLevel string, out io.Writer) (*exec.Cmd, error) {
 	cmd := exec.Command("sccache-dist", "scheduler", "--config", confPath)
 	cmd.Env = logEnv(logLevel)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = out
+	cmd.Stderr = out
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start scheduler: %w", err)
 	}
