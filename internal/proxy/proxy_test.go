@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -105,11 +106,13 @@ func TestResponseAfterClientHalfClose(t *testing.T) {
 // hold its connection open forever.
 func TestDialTimeoutClosesClient(t *testing.T) {
 	ln := listen(t)
+	var attempts atomic.Int64
 	f := New("stuck", func(ctx context.Context) (net.Conn, error) {
+		attempts.Add(1)
 		<-ctx.Done()
 		return nil, ctx.Err()
 	})
-	f.dialTimeout = 200 * time.Millisecond
+	f.attemptTimeout = 100 * time.Millisecond
 	go f.Serve(ln)
 
 	c, err := net.Dial("tcp", ln.Addr().String())
@@ -121,8 +124,43 @@ func TestDialTimeoutClosesClient(t *testing.T) {
 	if _, err := c.Read(make([]byte, 1)); err != io.EOF {
 		t.Fatalf("client read %v, want EOF once the dial gives up", err)
 	}
-	if s := f.Status(); !strings.Contains(s, "dial-fail=1") {
+	if n := attempts.Load(); n != dialAttempts {
+		t.Fatalf("%d dial attempts, want %d", n, dialAttempts)
+	}
+	if s := f.Status(); !strings.Contains(s, "dial-fail=1 ") {
 		t.Fatalf("status %q, want dial-fail=1", s)
+	}
+}
+
+// A dial that hangs is retried as a fresh dial. Over tsnet a retry gets a new
+// ephemeral port, which is what gets past a SYN that gVisor drops because its
+// 4-tuple is still in TIME_WAIT on the far side.
+func TestHungDialIsRetried(t *testing.T) {
+	addr, got := backend(t, "")
+	ln := listen(t)
+	var attempts atomic.Int64
+	local := Local(addr)
+	f := New("retry", func(ctx context.Context) (net.Conn, error) {
+		if attempts.Add(1) == 1 {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return local(ctx)
+	})
+	f.attemptTimeout = 100 * time.Millisecond
+	go f.Serve(ln)
+
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Write([]byte("after retry"))
+	c.Close()
+	if s := <-got; s != "after retry" {
+		t.Fatalf("backend got %q", s)
+	}
+	if s := f.Status(); !strings.Contains(s, "dial-retry=1 dial-fail=0 ") {
+		t.Fatalf("status %q, want dial-retry=1 dial-fail=0", s)
 	}
 }
 

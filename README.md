@@ -213,8 +213,12 @@ turned a 2-worker farm into a 16-objects-a-minute crawl. The defenses:
 - **Forwards pass a closed connection on.** When one side of a relayed
   connection reaches EOF, the forward half-closes the other side, so a
   scheduler or client that gives up shows up as a closed connection at the
-  server, and the stalled handshake fails instead of hanging. Dials over the
-  tailnet time out after 10 s.
+  server, and the stalled handshake fails instead of hanging.
+- **Dials are bounded and retried.** Each relay dials up to 3 times, 4 s per
+  attempt. tsnet's netstack (gVisor) silently drops a SYN whose 4-tuple is
+  still in TIME_WAIT on the far side; that state lasts 60 s. With a new
+  connection per request, about 1 dial in 300 reused such a tuple and hung.
+  A retry picks a fresh source port.
 - **The worker supervises its server.** Every 10 s it sends the server, over
   loopback, an `assign_job` with no job token, which the server must refuse
   with a 401 (not logged). Three misses in a row (15 s timeout each), or the
@@ -223,7 +227,7 @@ turned a 2-worker farm into a 16-objects-a-minute crawl. The defenses:
   had stuck on the old one. Probes never cross the tailnet, so a slow path
   can't trigger a restart. A restart never ends the worker.
 - **Status lines every 30 s.** Each relay hop logs active and total
-  connections, failed dials and its slowest dial, plus the tailnet path to the
+  connections, retried and failed dials and its slowest dial, plus the tailnet path to the
   peer (`direct <addr>`, `peer-relay <addr>` or `derp <region>`). Workers log
   their server restart count; the coordinator logs how many servers the
   scheduler has registered.
